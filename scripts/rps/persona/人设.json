@@ -1,0 +1,15 @@
+{
+  "_说明": "人设可调参数。改完不用重启程序，下一轮生效。persona_id 选 persona/ 下的文件名。",
+  "persona_id": "feiyu",
+  "name": "大肥鱼",
+  "sass": 2,
+  "max_chars": 40,
+  "lines": 2,
+  "taunt_rate": 1.0,
+  "intro_lines": 2,
+  "allow_emoji": false,
+  "temperature": 0.9,
+  "_sass说明": "0=不毒舌 1=轻微 2=正常（默认） 3=毒舌但绝不骂人",
+  "_taunt_rate说明": "每轮说垃圾话的概率，0~1；1.0=每轮都说",
+  "_预算说明": "人设只影响说话，绝不参与出拳；单次 2 秒硬上限，失败就跳过"
+}

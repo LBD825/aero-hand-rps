@@ -1,0 +1,28 @@
+# --- 不发布的：环境与产物 ---
+.venv/
+.venv312/
+__pycache__/
+*.pyc
+产物/
+_tmp/
+logs/
+downloads/
+
+# 第三方副本（要的是引用，不是拷贝）
+aero-open-sim/
+mujoco_playground/
+repo/
+
+# 硬件资产（原项目许可范围，另行分发）
+cad/
+firmware/
+
+# 运行期数据 / 密钥（绝不公开）
+sim2real/.api_token
+sim2real/rps_lock.json
+sim2real/rps_history.json
+sim2real/rps_history.bak-*.json
+sim2real/ESTOP
+sim2real/poses_user.json
+*.log
+monitor-live.csv

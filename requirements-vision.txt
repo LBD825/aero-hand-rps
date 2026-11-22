@@ -1,0 +1,12 @@
+# Aero Hand Open · 视觉环境依赖（.venv312，**必须 Python 3.12**）
+# 用途：摄像头手势识别（27 全量 12 类 / 27b 猜拳 3 类）、对局摄像头认人
+# ⚠ mediapipe 没有 Python 3.13 的轮子，所以视觉必须单独一个 3.12 环境
+# 安装：
+#   uv venv --python 3.12 .venv312
+#   uv pip install --python .venv312\Scripts\python.exe -r requirements-vision.txt --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
+mediapipe>=1.2,<2      # 手部关键点（Tasks API）
+opencv-python>=4.8     # 采集（MSMF 后端）
+numpy>=1.26
+pillow>=10.0           # 预览图渲染
+pyserial>=3.5          # 对局要真机出拳时用（30_rps_game --live）
