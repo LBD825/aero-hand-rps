@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   contract-tests:
-    name: 濂戠害娴嬭瘯 (${{ matrix.os }} / py${{ matrix.python-version }})
+    name: contract-tests (${{ matrix.os }} / py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -20,26 +20,28 @@ jobs:
         python-version: ["3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout
+        uses: actions/checkout@v7
 
-      - name: 瀹夎 Python
-        uses: actions/setup-python@v6
+      - name: Set up Python
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: 璇硶妫€鏌ワ紙鎵€鏈?py 閮借兘缂栬瘧锛?        shell: bash
+      - name: Syntax check (every .py must compile)
+        shell: bash
         run: |
           python -m compileall -q agent scripts tests
           echo "compileall OK"
 
-      - name: 濂戠害娴嬭瘯锛?2 椤癸紝dry-run锛屼笉纰扮‖浠讹級
+      - name: Contract tests (32 assertions, dry-run, no hardware)
         shell: bash
         env:
           PYTHONIOENCODING: utf-8
           PYTHONPATH: ${{ github.workspace }}
         run: python tests/test_agent_dryrun.py
 
-      - name: 濮垮娍搴撹嚜妫€锛?7 濮垮娍 脳 7 閫氶亾 鍏ㄩ儴钀藉湪 limits 鍐咃級
+      - name: Pose library self-check (17 poses x 7 channels inside limits.json)
         shell: bash
         env:
           PYTHONIOENCODING: utf-8
