@@ -25,6 +25,8 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 import math
 import sys
 import time
@@ -36,8 +38,8 @@ MODEL = r"C:\AeroHandProj\models\hand_landmarker.task"      # 必须英文路径
 ROOT = Path(__file__).resolve().parent.parent
 SIM = ROOT / "sim2real"
 API = "http://127.0.0.1:8765"
-STABLE_FRAMES = 6          # 稳定多少帧才触发
-COOLDOWN = 2.5             # 触发后的冷却秒数
+STABLE_FRAMES = 24         # 稳定多少帧才触发（48fps 下≈0.5 秒；6 帧=0.125 秒会自激抖动）
+COOLDOWN = 4.0             # 触发后的冷却秒数（要大于一次动作时长，否则连环触发→电流尖峰）
 
 # 关键点索引（MediaPipe Hands 标准）
 WRIST = 0
@@ -69,6 +71,54 @@ def api_post(path: str, obj: dict, token: str, timeout: float = 5.0):
         headers={"Content-Type": "application/json", "X-Token": token})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
+
+
+class PoseSender:
+    """把下发姿势丢到后台线程，别堵住摄像头循环。
+
+    为什么需要（2026-11-22 实测）：POST /pose {"secs":1.2} 是同步的——
+    服务端要走完 1.2 秒才返回，实测一次 1.99 秒。原来在主循环里直接调，
+    于是每识别到一个手势画面就冻两秒，用户感觉"识别时特别卡"。
+    现在主循环只把最新手势塞进槽位，真正的 HTTP 请求在 daemon 线程里跑；
+    槽位只留最新一个（旧请求没发完就被换掉），不会积压。
+    """
+
+    def __init__(self, token: str):
+        self.token = token
+        self._lock = threading.Lock()
+        self._pending = None          # (name, secs) 或 None
+        self._stop = False
+        self.sent = 0
+        self.errors = 0
+        self.dead = False             # API 连不上时置 True
+        self._th = threading.Thread(target=self._run, daemon=True)
+        self._th.start()
+
+    def submit(self, name: str, secs: float) -> None:
+        with self._lock:
+            self._pending = (name, secs)
+
+    def _run(self) -> None:
+        while not self._stop:
+            with self._lock:
+                job, self._pending = self._pending, None
+            if job is None:
+                time.sleep(0.02)
+                continue
+            name, secs = job
+            try:
+                api_post("/pose", {"name": name, "secs": secs}, self.token, timeout=15.0)
+                self.sent += 1
+                print(f"[下发] {name}（{secs}s）", flush=True)
+            except Exception as e:
+                self.errors += 1
+                print(f"[下发失败] {name}: {e}", flush=True)
+                if "10061" in str(e) or "拒绝" in str(e) or "refused" in str(e).lower():
+                    self.dead = True          # API 没了，主循环会把 auto 关掉
+                    print("[提示] API 连不上（可能被急停杀掉了）→ 已自动关闭 auto", flush=True)
+
+    def close(self) -> None:
+        self._stop = True
 
 
 def fingers_up(lms) -> tuple[list[bool], bool]:
@@ -154,6 +204,7 @@ def main() -> None:
     _mod = _ilu.module_from_spec(_spec)
     _spec.loader.exec_module(_mod)
     grab = _mod.FrameGrabber(index=0, size=(960, 540))
+    sender = PoseSender(token)      # 后台下发，避免阻塞画面
     print("摄像头后端:", "MSMF" if grab.backend == cv2.CAP_MSMF else "DSHOW", flush=True)
 
     # 2026-11-21 事故后改：**默认不自动执行**。原因：默认 True 时，启动台一开视觉，
@@ -162,6 +213,9 @@ def main() -> None:
     auto = False
     last_gesture = None
     stable = 0
+    _last_logged = None      # 上一次打印过的识别结果（防重复刷屏）
+    _last_log_at = 0.0
+    _n_frames, _fps_t0 = 0, time.time()
     last_fire = 0.0
     fired_for = None
     t0 = time.time()
@@ -201,13 +255,30 @@ def main() -> None:
             fired_for = None
         last_gesture = gesture
 
+        # 2026-11-22：不管 auto 开没开，**识别结果一变就打一行**（方便看日志/远程测准不准）
+        # 稳定到 STABLE_FRAMES 算"识别成功"一次，冷却 GLOG_COOLDOWN 秒避免刷屏
+        now = time.time()
+        if gesture and stable >= STABLE_FRAMES and gesture != _last_logged and now - _last_log_at > 1.0:
+            print(f"[识别] {gesture}（稳 {stable}/{STABLE_FRAMES}）", flush=True)
+            _last_logged, _last_log_at = gesture, now
+        elif not gesture and _last_logged and now - _last_log_at > 2.0:
+            _last_logged = None
+
+        # API 挂了就别再触发（否则一直刷失败日志）
+        if getattr(sender, "dead", False) and auto:
+            auto = False
+            print("[安全] 已自动关闭 auto（API 不可用）", flush=True)
+
         # 触发
         now = time.time()
         if (auto and gesture and stable >= STABLE_FRAMES
                 and fired_for != gesture and now - last_fire > COOLDOWN):
             if poses and gesture in poses:
                 try:
-                    api_post("/pose", {"name": gesture, "secs": 0}, token)
+                    # 2026-11-22 事故修复：原来 secs=0（瞬时下发），手势切换是大步跳变，
+                    # 实测把电流顶到 -399 触发 estop 杀掉 API。改平滑过渡（默认 1.2 秒）。
+                    secs = float(os.environ.get('VISION_POSE_SECS', '2.0'))
+                    sender.submit(gesture, secs)
                     print(f"[触发] {gesture}", flush=True)
                     last_fire = now
                     fired_for = gesture
@@ -229,6 +300,11 @@ def main() -> None:
         if fired_for:
             cv2.putText(frame, f"FIRED: {fired_for}", (12, 98),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 220, 255), 2)
+        # 每 2 秒打一行帧率，卡不卡一眼能看出来（2026-11-22 加）
+        _n_frames += 1
+        if time.time() - _fps_t0 >= 2.0:
+            print(f"[fps] {_n_frames / (time.time() - _fps_t0):.1f}", flush=True)
+            _n_frames, _fps_t0 = 0, time.time()
         cv2.imshow("Aero Hand gesture control (space=auto, r=reload, q=quit)", frame)
 
         k = cv2.waitKey(1) & 0xFF
