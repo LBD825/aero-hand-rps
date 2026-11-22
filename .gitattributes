@@ -1,0 +1,12 @@
+# 默认：文本文件按 LF 存储
+* text=auto eol=lf
+
+# Windows 批处理必须 CRLF，否则 cmd 解析 if(...) 块会错乱
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制：别做行尾转换
+*.task binary
+*.png binary
+*.jpg binary
+*.zip binary
