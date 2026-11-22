@@ -39,13 +39,17 @@ ROOT = Path(__file__).resolve().parent.parent
 SIM = ROOT / "sim2real"
 API = "http://127.0.0.1:8765"
 STABLE_FRAMES = 24         # 稳定多少帧才触发（48fps 下≈0.5 秒；6 帧=0.125 秒会自激抖动）
-COOLDOWN = 4.0             # 触发后的冷却秒数（要大于一次动作时长，否则连环触发→电流尖峰）
+COOLDOWN = 4.0             # 默认冷却（实际用"自适应时长 + 2 秒"，见主循环）
+MIN_SECS = 1.5             # 一次动作最短时长
+MAX_SECS = 6.0             # 一次动作最长时长（跨半个行程时用这个）
+UNITS_PER_SEC = 12000.0    # 每秒钟最多走多少个 u16 单位（跨度 ÷ 这个 = 时长）
 
 # 关键点索引（MediaPipe Hands 标准）
 WRIST = 0
-THUMB_TIP = 4
+THUMB_MCP, THUMB_IP, THUMB_TIP = 2, 3, 4
 INDEX_TIP, INDEX_PIP, INDEX_MCP = 8, 6, 5
 MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP = 12, 10, 9
+RING_MCP = 13
 RING_TIP, RING_PIP = 16, 14
 PINKY_TIP, PINKY_PIP, PINKY_MCP = 20, 18, 17
 
@@ -121,19 +125,58 @@ class PoseSender:
         self._stop = True
 
 
+def _angle_deg(a, b, c) -> float:
+    """以 b 为顶点的夹角（度）。用 x,y,z 三维向量，对"手在画面里怎么转"不敏感。
+
+    手指伸直 ≈ 170~180°，屈曲 ≈ 30~100°。比"指尖到手腕的距离"稳得多：
+    后者在手倾斜或指尖朝向镜头时会失效（2026-11-22 实测：做 3 被判成全屈）。
+    """
+    v1 = (a.x - b.x, a.y - b.y, a.z - b.z)
+    v2 = (c.x - b.x, c.y - b.y, c.z - b.z)
+    n1 = math.sqrt(v1[0] ** 2 + v1[1] ** 2 + v1[2] ** 2)
+    n2 = math.sqrt(v2[0] ** 2 + v2[1] ** 2 + v2[2] ** 2)
+    if n1 < 1e-9 or n2 < 1e-9:
+        return 0.0
+    cosv = (v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]) / (n1 * n2)
+    cosv = max(-1.0, min(1.0, cosv))
+    return math.degrees(math.acos(cosv))
+
+
 def fingers_up(lms) -> tuple[list[bool], bool]:
     """返回 (四指是否伸直[食,中,无名,小指], 拇指是否外伸)。
 
-    判据：指尖到手腕的距离 明显大于 该指 PIP 到手腕的距离（伸直时指尖更远）。
+    **判据（2026-11-22 改）**：手指伸直与否看**指节夹角** `angle(MCP, PIP, TIP)`：
+      伸直 ≈ 160~180°，屈曲 ≈ 30~110°。阈值取 145° 作分界（留一点余量给半伸）。
+    拇指：既要"伸直"（`angle(MCP,IP,TIP)` 够大），又要"离掌心远"
+      （指尖到小指根 > 指尖到食指根），两个条件都满足才算外伸。
+    旧判据（指尖到手腕距离 > PIP 到手腕距离 ×1.12）在手倾斜/指尖朝镜头时会整排判成屈曲，
+    实测把"数字3"判成 T1 0000、把"枪"的食指和小指搞反。
     """
-    tips = [(INDEX_TIP, INDEX_PIP), (MIDDLE_TIP, MIDDLE_PIP),
-            (RING_TIP, RING_PIP), (PINKY_TIP, PINKY_PIP)]
+    straight_min = 145.0
     out = []
-    for tip, pip in tips:
-        out.append(dist(lms[tip], lms[WRIST]) > dist(lms[pip], lms[WRIST]) * 1.12)
-    # 拇指：指尖离小指根越远，说明越外展/伸直
-    thumb_out = dist(lms[THUMB_TIP], lms[PINKY_MCP]) > dist(lms[THUMB_TIP], lms[INDEX_MCP]) * 1.05
+    for mcp, pip, tip in ((INDEX_MCP, INDEX_PIP, INDEX_TIP),
+                          (MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP),
+                          (RING_MCP, RING_PIP, RING_TIP),
+                          (PINKY_MCP, PINKY_PIP, PINKY_TIP)):
+        out.append(_angle_deg(lms[mcp], lms[pip], lms[tip]) >= straight_min)
+    # 拇指：伸直 + 外展（离小指根比离食指根更远）
+    thumb_straight = _angle_deg(lms[THUMB_MCP], lms[THUMB_IP], lms[THUMB_TIP]) >= 140.0
+    thumb_abduct = dist(lms[THUMB_TIP], lms[PINKY_MCP]) > dist(lms[THUMB_TIP], lms[INDEX_MCP]) * 1.02
+    thumb_out = thumb_straight and thumb_abduct
     return out, thumb_out
+
+
+def diag_fingers(lms) -> str:
+    """一行指型摘要，用于诊断"为什么判成这个手势"。
+
+    格式：T=拇指外伸，然后 食 中 无名 小 = 1 伸直 / 0 屈曲。
+    例：T1 1 0 0 0 → 拇指伸 + 食指伸 = 应该是 gun（枪）。
+    """
+    try:
+        four, thumb = fingers_up(lms)
+        return ("T1 " if thumb else "T0 ") + " ".join("1" if f else "0" for f in four)
+    except Exception:
+        return "指型读取失败"
 
 
 def classify(lms) -> str | None:
@@ -218,6 +261,20 @@ def main() -> None:
     _n_frames, _fps_t0 = 0, time.time()
     last_fire = 0.0
     fired_for = None
+    cooldown = COOLDOWN
+    # 姿势目标值表 + 当前目标（用来算"这次要跨多远"，从而决定动作时长）
+    pose_targets = {}
+    try:
+        import json as _json
+        _doc = _json.loads((Path(__file__).resolve().parent.parent
+                           / "sim2real" / "poses.json").read_text(encoding="utf-8-sig"))
+        for _n, _p in (_doc.get("poses") or {}).items():
+            _t = _p.get("targets") if isinstance(_p, dict) else _p
+            if _t and len(_t) == 7:
+                pose_targets[_n] = [int(v) for v in _t]
+    except Exception as _e:
+        print(f"⚠ 读不到 poses.json 的目标值（自适应速度会退化为固定时长）：{_e}", flush=True)
+    cur_targets = pose_targets.get("open", [0] * 7)
     t0 = time.time()
 
     print("窗口已开：**自动执行默认关闭**（按空格开启才会动手）；r=重读姿势，q=退出", flush=True)
@@ -259,7 +316,8 @@ def main() -> None:
         # 稳定到 STABLE_FRAMES 算"识别成功"一次，冷却 GLOG_COOLDOWN 秒避免刷屏
         now = time.time()
         if gesture and stable >= STABLE_FRAMES and gesture != _last_logged and now - _last_log_at > 1.0:
-            print(f"[识别] {gesture}（稳 {stable}/{STABLE_FRAMES}）", flush=True)
+            print(f"[识别] {gesture}（稳 {stable}/{STABLE_FRAMES}）指型={diag_fingers(lms)}",
+                  flush=True)
             _last_logged, _last_log_at = gesture, now
         elif not gesture and _last_logged and now - _last_log_at > 2.0:
             _last_logged = None
@@ -272,14 +330,31 @@ def main() -> None:
         # 触发
         now = time.time()
         if (auto and gesture and stable >= STABLE_FRAMES
-                and fired_for != gesture and now - last_fire > COOLDOWN):
+                and fired_for != gesture and now - last_fire > cooldown):
             if poses and gesture in poses:
                 try:
-                    # 2026-11-22 事故修复：原来 secs=0（瞬时下发），手势切换是大步跳变，
-                    # 实测把电流顶到 -399 触发 estop 杀掉 API。改平滑过渡（默认 1.2 秒）。
-                    secs = float(os.environ.get('VISION_POSE_SECS', '2.0'))
+                    # 2026-11-22 二次事故修复：固定 2 秒不够 —— 各姿势之间 **ch0（拇指外展）
+                    # 跨度最大到 51000**（行程只有 0~53000），2 秒走完半个行程会把舵机顶到
+                    # 电流 -477，触发 estop 把 API 杀掉。
+                    # 现在按"最大通道跨度"自适应时长：跨度越大越慢，冷却跟着时长走。
+                    tgt = pose_targets.get(gesture)
+                    if tgt:
+                        span = max(abs(int(tgt[i]) - int(cur_targets[i])) for i in range(7))
+                    else:
+                        span = 0
+                    secs = min(MAX_SECS, max(MIN_SECS, span / UNITS_PER_SEC))
+                    # 允许环境变量强制覆盖（用户要"瞬时"时设 VISION_POSE_SECS=0）：
+                    # 0 = 瞬时下发。⚠ 跨 5 万的姿势瞬时切会顶到电流上限触发急停，
+                    # 这是用户明确要求后才这么跑的。
+                    _ovr = os.environ.get("VISION_POSE_SECS")
+                    if _ovr is not None:
+                        secs = max(0.0, float(_ovr))
                     sender.submit(gesture, secs)
-                    print(f"[触发] {gesture}", flush=True)
+                    if tgt:
+                        cur_targets = [int(v) for v in tgt]
+                    cooldown = secs + 2.0          # 冷却＝动作时长 + 余量，避免连环触发
+                    print(f"[触发] {gesture} 指型={diag_fingers(lms)} 跨度={span} 时长={secs:.1f}s",
+                          flush=True)
                     last_fire = now
                     fired_for = gesture
                 except Exception as e:
