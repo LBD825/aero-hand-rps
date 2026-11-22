@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract-tests:
+    name: 契约测试 (${{ matrix.os }} / py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 语法检查（所有 py 都能编译）
+        shell: bash
+        run: |
+          python -m compileall -q agent scripts tests
+          echo "compileall OK"
+
+      - name: 契约测试（32 项，dry-run，不碰硬件）
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONPATH: ${{ github.workspace }}
+        run: python tests/test_agent_dryrun.py
+
+      - name: 姿势库自检（17 姿势 × 7 通道 全部落在 limits 内）
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python tests/check_poses.py
