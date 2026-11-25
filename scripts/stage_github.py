@@ -34,6 +34,8 @@ FILES = [
     "scripts/24_gui_manual.py", "scripts/26_api.py", "scripts/00_launcher.py",
     "scripts/stop_all.py", "scripts/pack_dist.py", "scripts/precheck.py",
     "scripts/33_gesture_accuracy.py", "scripts/stats_rps.py",
+    "scripts/eval_kaggle.py", "scripts/eval_kaggle_sweep.py", "scripts/make_paper_rps.py",
+    "scripts/rps/backends_kaggle.py",
     # 动作与安全
     "scripts/motion.py", "scripts/safe.py", "scripts/estop.py", "scripts/thermal.py",
     "scripts/porthelp.py", "scripts/14_monitor.py", "scripts/16_safe_init.py",
