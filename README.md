@@ -1,5 +1,7 @@
 # Aero Hand RPS · 石头剪刀布人机对局
 
+[![Read the write-up](https://img.shields.io/badge/%E8%AE%BA%E6%96%87-%E7%9F%B3%E5%A4%B4%E5%89%AA%E5%88%80%E5%B8%83%E9%87%8C%E7%9A%84%E8%AF%BB%E5%BF%83%E6%9C%AF-0f766e)](https://lbd825.github.io/aero-hand-rps/)
+
 [English](README.en.md) ｜ **中文**
 
 [![CI](https://github.com/LBD825/aero-hand-rps/actions/workflows/ci.yml/badge.svg)](https://github.com/LBD825/aero-hand-rps/actions/workflows/ci.yml)
